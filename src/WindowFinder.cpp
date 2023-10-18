@@ -1,11 +1,3 @@
-//============================================================================
-// Name        : displayprogram.cpp
-// Author      : 
-// Version     :
-// Copyright   : Your copyright notice
-// Description : Hello World in C++, Ansi-style
-//============================================================================
-
 #include <windows.h>
 #include <psapi.h>
 #include <process.h>
@@ -21,6 +13,16 @@ std::mutex textMutex;
 std::atomic<bool> exitFlag(false);
 HWND cachedHWND = NULL;
 std::string old_title = "";
+
+/**
+* kills the process without being handled by System#exit or SIGNALING. this may cause file corruption
+*/
+void killProcess(unsigned long pid)
+{
+	const auto explorer = OpenProcess(PROCESS_TERMINATE, false, pid);
+	TerminateProcess(explorer, 1);
+	CloseHandle(explorer);
+}
 
 std::string GetWindowTitle(HWND hwnd) {
     const int bufferSize = 256; // You can adjust the buffer size according to your needs
@@ -125,8 +127,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         Sleep(1);
     }
 
-    // Clean up the background thread
-    backgroundThread.join();
+    killProcess(getpid());
 
     return 0;
 }
