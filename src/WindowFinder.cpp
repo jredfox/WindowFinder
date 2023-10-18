@@ -1,18 +1,32 @@
+//============================================================================
+// Name        : displayprogram.cpp
+// Author      : 
+// Version     :
+// Copyright   : Your copyright notice
+// Description : Hello World in C++, Ansi-style
+//============================================================================
+
 #include <windows.h>
 #include <psapi.h>
 #include <process.h>
-#include <tlhelp32.h>
-#include <vector>
+#include <thread>
+#include <mutex>
 #include <iostream>
-using namespace std;
+#include <atomic>
 
-bool endsWith (string const &fullString, string const &ending)
-{
-	if (fullString.length() >= ending.length())
-	{
-		return (0 == fullString.compare (fullString.length() - ending.length(), ending.length(), ending));
-	}
-	return false;
+using namespace std;
+std::string text = "";
+std::string title = "";
+std::mutex textMutex;
+std::atomic<bool> exitFlag(false);
+HWND cachedHWND = NULL;
+std::string old_title = "";
+
+std::string GetWindowTitle(HWND hwnd) {
+    const int bufferSize = 256; // You can adjust the buffer size according to your needs
+    char buffer[bufferSize];
+    GetWindowText(hwnd, buffer, bufferSize);
+    return std::string(buffer);
 }
 
 /**
@@ -28,80 +42,129 @@ string getProcessName(unsigned long pid)
 	return string(filename);
 }
 
-string GetWindowClass(HWND hwnd)
+extern "C" __declspec(dllexport) DWORD getPID(HWND h)
 {
-	char windowClass[256];
-	GetClassNameA(hwnd, windowClass, sizeof(windowClass));
-	return std::string(windowClass);
+	DWORD pid = 0;
+	GetWindowThreadProcessId(h, &pid);
+	return pid;
 }
+
+#include <windows.h>
+#include <string>
+
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 /**
- * returns all PID's from the specified executable
+ * actual code
  */
-void getPIDS(string path, vector<DWORD> &pids)
-{
-	PROCESSENTRY32 entry;
-	entry.dwSize = sizeof(PROCESSENTRY32);
-	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (Process32First(snapshot, &entry))
-	{
-		while (Process32Next(snapshot, &entry))
-		{
-			if(endsWith(path, entry.szExeFile) && getProcessName(entry.th32ProcessID) == path)
-			{
-				pids.push_back(entry.th32ProcessID);
-			}
-		}
-	}
-	CloseHandle(snapshot);
-}
-
-void GetAllWindowsFromProcessID(DWORD dwProcessID, vector <HWND> &vhWnds, bool bg)
-{
-	// find all hWnds (vhWnds) associated with a process id (dwProcessID)
-	HWND hCurWnd = nullptr;
-	do
-	{
-		hCurWnd = FindWindowEx(nullptr, hCurWnd, nullptr, nullptr);
-		DWORD checkProcessID = 0;
-		GetWindowThreadProcessId(hCurWnd, &checkProcessID);
-		if (checkProcessID == dwProcessID && (bg || IsWindowVisible(hCurWnd)))
-		{
-			vhWnds.push_back(hCurWnd);
-		}
-	}
-	while (hCurWnd != nullptr);
-}
-
-int main()
-{
-	ShowWindow (GetConsoleWindow(), SW_HIDE);
-	char* homePath = getenv("HOMEDRIVE");
-	std::string homePathString(homePath);
-	std::string drive = homePathString.substr(0,1);
-	std::string expl = drive + ":\\Windows\\explorer.exe";
-    while (true)
-    {
-        vector<DWORD> pids;
-        getPIDS(expl, pids);
-        for(DWORD pid : pids)
+void BackgroundTask(HWND hwnd) {
+	while (!exitFlag) {
+        Sleep(16);
+        std::lock_guard<std::mutex> lock(textMutex);
+        HWND activeHWND = GetForegroundWindow();
+        DWORD pid = getPID(activeHWND);
+        text = "EXE: " + getProcessName(pid);
+        title = "Title: '" + GetWindowTitle(activeHWND) + "' PID:" + to_string(pid);
+        if(activeHWND != cachedHWND || old_title != title)
         {
-        	vector<HWND> hwnds;
-        	GetAllWindowsFromProcessID(pid, hwnds, false);
-        	for(HWND hwnd : hwnds)
-        	{
-        		string clazz = GetWindowClass(hwnd);
-        		//checks if the file explorer window is a dialog box and if so close it
-        		if(clazz == "#32770")
-        		{
-        			cout << "Closing File Explorer Popup:" << clazz << " " << pid << endl;
-        			PostMessage(hwnd, WM_CLOSE, 0, 0);
-        			Sleep(5);
-        			PostMessage(hwnd, WM_QUIT, 0, 0);
-        		}
-        	}
+        	InvalidateRect(hwnd, NULL, TRUE);
+        	cachedHWND = activeHWND;
+        	old_title = title;
         }
-        Sleep(50); // Sleep for 1/20th of a second so we tick 20 times a second optimally
     }
+}
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+	ShowWindow (GetConsoleWindow(), SW_HIDE);
+    // ... (same as previous code)
+    // Register the window class.
+    const char CLASS_NAME[]  = "MyWindowClass";
+
+    WNDCLASS wc = {};
+    wc.lpfnWndProc   = WindowProc;
+    wc.hInstance     = hInstance;
+    wc.lpszClassName = CLASS_NAME;
+
+    RegisterClass(&wc);
+
+    // Create the window.
+    HWND hwnd = CreateWindowEx(
+        0,                               // Optional window styles.
+        CLASS_NAME,                      // Window class
+        "Window Finder",                     // Window text
+        WS_OVERLAPPEDWINDOW,             // Window style
+
+        // Size and position
+        CW_USEDEFAULT, CW_USEDEFAULT, 700, 150,
+
+        NULL,       // Parent window
+        NULL,       // Menu
+        hInstance,  // Instance handle
+        NULL        // Additional application data
+    );
+
+    if (hwnd == NULL) {
+        return 0;
+    }
+
+    // Make the window always on top.
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
+    ShowWindow(hwnd, nCmdShow);
+
+    // Start the background thread
+    std::thread backgroundThread(BackgroundTask, hwnd);
+
+    // Run the message loop.
+    MSG msg = {};
+    while (GetMessage(&msg, NULL, 0, 0))
+    {
+        InvalidateRect(hwnd, NULL, TRUE);
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+        Sleep(1);
+    }
+
+    // Clean up the background thread
+    backgroundThread.join();
+
     return 0;
 }
+
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+
+        case WM_CLOSE:
+            PostQuitMessage(0);
+            exitFlag = true;
+            return 0;
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+
+            // Fill the window with a background color (white in this case)
+            HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
+            FillRect(hdc, &rect, hBrush);
+            DeleteObject(hBrush);
+
+            // Convert string to const char* before drawing
+            const char* charText = text.c_str();
+            const char* charTitle = title.c_str();
+
+            // Draw the text on the window
+            DrawText(hdc, charText, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawText(hdc, charTitle, -1, &rect, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
+
+            EndPaint(hwnd, &ps);
+        }
+        return 0;
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
